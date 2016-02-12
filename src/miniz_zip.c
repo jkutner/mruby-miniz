@@ -6,6 +6,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <errno.h>
 
 #include "mruby/array.h"
 #include "mruby/class.h"
@@ -106,7 +107,7 @@ static mrb_value
 mrb_miniz_unzip(mrb_state *mrb, mrb_value klass)
 {
   mrb_value filezip, dir;
-  char path[50]={0x00};
+  char path[PATH_MAX]={0x00};
   struct stat st = {0};
   int i;
   mz_bool status;
@@ -134,7 +135,7 @@ mrb_miniz_unzip(mrb_state *mrb, mrb_value klass)
   if (mrb_string_p(dir))
   {
     if (stat(RSTRING_PTR(dir), &st) == -1) {
-      printf("Directory do not exist!\n");
+      printf("Directory does not exist!\n");
       return mrb_false_value();
     }
   } else {
@@ -153,11 +154,12 @@ mrb_miniz_unzip(mrb_state *mrb, mrb_value klass)
 
   mz_zip_reader_end(&zip_archive);
 
+  memset(&zip_archive, 0, sizeof(zip_archive));
+  status = mz_zip_reader_init_file(&zip_archive, RSTRING_PTR(filezip), 0);
+
   // Get and print information about each file in the archive.
   for (i = 0; i < n; i++)
   {
-    memset(&zip_archive, 0, sizeof(zip_archive));
-    status = mz_zip_reader_init_file(&zip_archive, RSTRING_PTR(filezip), 0);
 
     mz_zip_archive_file_stat file_stat;
     if (!mz_zip_reader_file_stat(&zip_archive, i, &file_stat))
@@ -167,21 +169,7 @@ mrb_miniz_unzip(mrb_state *mrb, mrb_value klass)
       return mrb_false_value();
     }
 
-    /*printf("Filename: \"%s\", Comment: \"%s\", Uncompressed size: %u, Compressed size: %u, Is Dir: %u\n", file_stat.m_filename, file_stat.m_comment, (uint)file_stat.m_uncomp_size, (uint)file_stat.m_comp_size, mz_zip_reader_is_file_a_directory(&zip_archive, i));*/
-
-    mz_zip_reader_end(&zip_archive);
-
-    memset(&zip_archive, 0, sizeof(zip_archive));
-    status = mz_zip_reader_init_file(&zip_archive, RSTRING_PTR(filezip), 0);
-
-    /*TODO Scalone: Check if directory*/
-    /*status = mz_zip_reader_init_file(&zip_archive, RSTRING_PTR(filezip), sort_iter ? MZ_ZIP_FLAG_DO_NOT_SORT_CENTRAL_DIRECTORY : 0);*/
-
-    if (!status)
-    {
-      printf("mz_zip_reader_init_file() failed!\n");
-      return mrb_false_value();
-    }
+    /* printf("Filename: \"%s\", Comment: \"%s\", Uncompressed size: %u, Compressed size: %u, Is Dir: %u\n", file_stat.m_filename, file_stat.m_comment, (uint)file_stat.m_uncomp_size, (uint)file_stat.m_comp_size, mz_zip_reader_is_file_a_directory(&zip_archive, i)); */
 
     p = mz_zip_reader_extract_file_to_heap(&zip_archive, file_stat.m_filename, &uncomp_size, 0);
     if (!p) {
@@ -191,13 +179,19 @@ mrb_miniz_unzip(mrb_state *mrb, mrb_value klass)
     }
 
     // Make sure the extraction really succeeded.
-    if (uncomp_size >= 0)
-    {
+    if (mz_zip_reader_is_file_a_directory(&zip_archive, i) == 1) {
+      sprintf(path, "%s/%s", RSTRING_PTR(dir), file_stat.m_filename);
+#if defined(_WIN32) || defined(_WIN64)
+      mkdir(path);
+#else
+      mkdir(path, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+#endif
+    } else if (uncomp_size >= 0) {
       sprintf(path, "%s/%s", RSTRING_PTR(dir), file_stat.m_filename);
       pOutfile = fopen(path, "wb");
       if (!pOutfile)
       {
-        printf("Failed opening output file!\n");
+        printf("Failed opening output file: %s\n", strerror(errno));
         return mrb_false_value();
       }
 
@@ -219,8 +213,8 @@ mrb_miniz_unzip(mrb_state *mrb, mrb_value klass)
       return mrb_false_value();
     }
 
-    /*printf("Successfully extracted file \"%s\", size %u\n", file_stat.m_filename, (uint)uncomp_size);*/
-    /*printf("File data: \"%s\"\n", (const char *)p);*/
+    /* printf("Successfully extracted file \"%s\", size %u\n", file_stat.m_filename, (uint)uncomp_size); */
+    /* printf("File data: \"%s\"\n", (const char *)p); */
 
     /*We're done.*/
     mz_free(p);
@@ -242,4 +236,3 @@ mrb_init_miniz(mrb_state* mrb)
   mrb_define_class_method(mrb, miniz, "zip", mrb_miniz_zip, MRB_ARGS_ANY());
   mrb_define_class_method(mrb, miniz, "_unzip", mrb_miniz_unzip, MRB_ARGS_REQ(2));
 }
-
